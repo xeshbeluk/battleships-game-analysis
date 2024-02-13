@@ -1,0 +1,553 @@
+---
+title: "Untitled"
+author: "Dmitry Solovyev"
+date: "`r Sys.Date()`"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+set.seed(42)
+### MAIN CODE ###
+
+
+#surrounding cells, used by the next function
+is_surrounding_empty <- function(board, row_start, row_end, col_start, 
+                                 col_end) {
+  row_start <- max(row_start - 1, 1)
+  row_end <- min(row_end + 1, nrow(board))
+  col_start <- max(col_start - 1, 1)
+  col_end <- min(col_end + 1, ncol(board))
+  return(all(board[row_start:row_end, col_start:col_end] == 0))
+}
+#place a ship
+place_ship <- function(board, ship_length) {
+  valid_placement <- FALSE
+  while (!valid_placement) {
+    orientation <- sample(1:2, 1)  
+    if (orientation == 1) {  
+      row <- sample(1:nrow(board), 1)
+      col_start <- sample(1:(ncol(board) - ship_length + 1), 1)
+      col_end <- col_start + ship_length - 1
+      if (is_surrounding_empty(board, row, row, col_start, col_end)) {
+        board[row, col_start:col_end] <- 1
+        valid_placement <- TRUE
+      }
+    } else {
+      col <- sample(1:ncol(board), 1)
+      row_start <- sample(1:(nrow(board) - ship_length + 1), 1)
+      row_end <- row_start + ship_length - 1
+      if (is_surrounding_empty(board, row_start, row_end, col, col)) {
+        board[row_start:row_end, col] <- 1
+        valid_placement <- TRUE
+      }
+    }
+  }
+  return(board)
+}
+#if ship is destroyed
+is_ship_destroyed <- function(board, row, col) {
+  directions <- list(c(-1, 0), c(1, 0), c(0, -1), c(0, 1))
+  
+  #Check direction
+  for (dir in directions) {
+    offset <- 1
+    while (TRUE) {
+      new_row <- row + (dir[1] * offset)
+      new_col <- col + (dir[2] * offset)
+
+      # out of bounds
+      if (new_row < 1 || new_row > nrow(board) || new_col < 1 || new_col 
+          > ncol(board)) {
+        break
+      }
+
+      #is not hit
+      if (board[new_row, new_col] == 1) {
+        return(FALSE)
+      }
+
+      #is a miss
+      if (board[new_row, new_col] != 2) {
+        break
+      }
+
+      offset <- offset + 1
+    }
+  }
+
+  return(TRUE)
+}
+
+#mark the cells around
+mark_surrounding_cells <- function(board, row, col) {
+  row_start <- max(row - 1, 1)
+  row_end <- min(row + 1, nrow(board))
+  col_start <- max(col - 1, 1)
+  col_end <- min(col + 1, ncol(board))
+  marked_cells <- list()
+
+  for (r in row_start:row_end) {
+    for (c in col_start:col_end) {
+      if (board[r, c] == 0) {
+        board[r, c] <- -1
+        marked_cells <- c(marked_cells, list(list(row = r, col = c)))
+      }
+    }
+  }
+  return(list("board" = board, "marked_cells" = marked_cells))
+}
+
+
+#remove a specific coordinate from the coordinates list
+remove_coordinate <- function(coordinates, row, col) {
+  coordinates <- coordinates[!(coordinates$x == col & coordinates$y == row),]
+  return(coordinates)
+}
+
+#size of a ship
+calculate_ship_length <- function(board, row, col) {
+  ship_length <- 1  
+  directions <- list(c(-1, 0), c(1, 0), c(0, -1), c(0, 1))
+
+  for (dir in directions) {
+    offset <- 1
+    while (TRUE) {
+      new_row <- row + (dir[1] * offset)
+      new_col <- col + (dir[2] * offset)
+      if (new_row < 1 || new_row > nrow(board) || new_col < 1 || new_col 
+          > ncol(board) || board[new_row, new_col] != 2) {
+        break
+      }
+      ship_length <- ship_length + 1
+      offset <- offset + 1
+    }
+  }
+  return(ship_length)
+}
+
+# shoot at a ship with strategy to hit adjacent cells if a ship is damaged
+shoot_at_ship <- function(board, coordinates, last_hit = NULL) {
+  target_found <- FALSE
+  row <- col <- NULL
+  destroyed_ship_length <- NULL
+  
+  # check if the ship is destroyed
+  if (!is.null(last_hit) && board[last_hit$row, last_hit$col] == 2 && 
+      !is_ship_destroyed(board, last_hit$row, last_hit$col)) {
+    adjacents <- rbind(
+      c(last_hit$row - 1, last_hit$col),
+      c(last_hit$row + 1, last_hit$col),
+      c(last_hit$row, last_hit$col - 1),
+      c(last_hit$row, last_hit$col + 1)
+    ) 
+    valid_adjacents <- adjacents[adjacents[, 1] > 0 & adjacents[, 1] 
+                                 <= nrow(board) & adjacents[, 2] > 0 
+                                 & adjacents[, 2] <= ncol(board), ]
+    for (i in 1:nrow(valid_adjacents)) {
+      if (paste(valid_adjacents[i, 1], valid_adjacents[i, 2]) 
+          %in% paste(coordinates$y, coordinates$x)) {
+        row <- valid_adjacents[i, 1]
+        col <- valid_adjacents[i, 2]
+        target_found <- TRUE
+        break
+      }
+    }
+  }
+
+  if (!target_found) {
+    if (nrow(coordinates) == 0) {
+      stop("No more coordinates available to shoot.")
+    }
+    random_index <- sample(1:nrow(coordinates), 1)
+    row <- coordinates[random_index, "y"]
+    col <- coordinates[random_index, "x"]
+  }
+  
+  coordinates <- remove_coordinate(coordinates, row, col)
+  if (board[row, col] == 1) {
+    board[row, col] <- 2
+    last_hit <- list(row = row, col = col)
+    # cat("Hit at row:", row, "col:", col, "\n")
+    
+    if (is_ship_destroyed(board, row, col)) {
+      # cat("Ship destroyed at row:", row, "col:", col, "\n")
+      destroyed_ship_length <- calculate_ship_length(board, row, col)
+      # cat("Destroyed_ship_length:", destroyed_ship_length, "\n")
+      surround_result <- mark_surrounding_cells(board, row, col)
+      board <- surround_result$board
+      marked_cells <- surround_result$marked_cells
+      for (cell in marked_cells) {
+        coordinates <- remove_coordinate(coordinates, cell$row, cell$col)
+      }
+      last_hit <- NULL
+    }
+  } else {
+    board[row, col] <- -1
+    # cat("Miss at row:", row, "col:", col, "\n")
+  }
+
+  return(list("board" = board, "coordinates" = coordinates, "last_hit" 
+              = last_hit, "destroyed_ship_length" = destroyed_ship_length))
+}
+
+### RANDOM SETUP ###
+
+play_game <- function() {
+  num_rows <- num_cols <- 10
+  game_board <- matrix(0, nrow = num_rows, ncol = num_cols)
+  ship_lengths <- c(4, 3, 3, 2, 2, 2, 1, 1, 1, 1)
+  
+  for (ship_length in ship_lengths) {
+    game_board <- place_ship(game_board, ship_length)
+  }
+  coordinates <- expand.grid(x = 1:num_cols, y = 1:num_rows)
+  total_shots <- 0
+  last_hit <- NULL
+
+  ship_destruction_data <- data.frame(ship_length = integer(), turn = integer())
+
+  while (sum(game_board == 1) > 0) {
+    result <- shoot_at_ship(game_board, coordinates, last_hit)
+    game_board <- result$board
+    coordinates <- result$coordinates
+    last_hit <- result$last_hit
+    destroyed_ship_length <- result$destroyed_ship_length
+    total_shots <- total_shots + 1
+
+    if (!is.null(result$destroyed_ship_length) && result$destroyed_ship_length 
+        > 0) {
+      ship_destruction_data <- rbind(ship_destruction_data, 
+                                     data.frame(ship_length 
+                                                = result$destroyed_ship_length, 
+                                                turn = total_shots))
+    }
+  }
+
+  
+  # cat("All ships destroyed in", total_shots, "shots.\n")
+  return(list(total_shots = total_shots, ship_destruction_data 
+              = ship_destruction_data))
+}
+
+### WOLF SETUP ###
+play_game_wolf <- function() {
+  num_rows <- num_cols <- 10
+  ship_lengths <- c(4, 3, 3, 2, 2, 2, 1, 1, 1, 1)
+  game_board <- rbind(c(1,1,1,1,0,1,1,1,0,1),
+                     c(0,0,0,0,0,0,0,0,0,1),
+                     c(1,1,0,1,1,0,1,1,0,1),
+                     c(0,0,0,0,0,0,0,0,0,0),
+                     c(0,0,1,0,0,0,0,0,0,0),
+                     c(0,0,0,0,0,0,0,0,0,0),
+                     c(0,0,0,0,0,0,0,0,0,0),
+                     c(0,0,0,0,0,0,0,0,1,0),
+                     c(0,1,0,0,0,0,0,0,0,0),
+                     c(0,0,0,0,0,1,0,0,0,0))
+  coordinates <- expand.grid(x = 1:num_cols, y = 1:num_rows)
+  total_shots <- 0
+  last_hit <- NULL
+
+
+  ship_destruction_data <- data.frame(ship_length = integer(), turn = integer())
+
+  while (sum(game_board == 1) > 0) {
+    result <- shoot_at_ship(game_board, coordinates, last_hit)
+    game_board <- result$board
+    coordinates <- result$coordinates
+    last_hit <- result$last_hit
+    destroyed_ship_length <- result$destroyed_ship_length
+    total_shots <- total_shots + 1
+
+
+    if (!is.null(result$destroyed_ship_length) && result$destroyed_ship_length 
+        > 0) {
+      ship_destruction_data <- rbind(ship_destruction_data, 
+                                     data.frame(ship_length 
+                                                = result$destroyed_ship_length, 
+                                                turn = total_shots))
+    }
+  }
+
+  
+  # cat("All ships destroyed in", total_shots, "shots.\n")
+  return(list(total_shots = total_shots, ship_destruction_data 
+              = ship_destruction_data))
+}
+
+### EDGE SETUP ###
+play_game_edge <- function() {
+  num_rows <- num_cols <- 10
+  ship_lengths <- c(4, 3, 3, 2, 2, 2, 1, 1, 1, 1)
+  game_board <- rbind(c(1,1,1,1,0,1,1,1,0,1),
+                     c(0,0,0,0,0,0,0,0,0,0),
+                     c(0,0,0,0,0,0,0,0,0,1),
+                     c(1,0,0,0,0,0,0,0,0,1),
+                     c(1,0,0,0,0,0,0,0,0,1),
+                     c(0,0,0,0,0,0,0,0,0,0),
+                     c(0,0,0,0,0,0,0,0,0,0),
+                     c(1,0,0,0,0,0,0,0,0,1),
+                     c(1,0,0,0,0,0,0,0,0,0),
+                     c(0,0,1,0,0,1,0,0,1,1))
+  coordinates <- expand.grid(x = 1:num_cols, y = 1:num_rows)
+  total_shots <- 0
+  last_hit <- NULL
+
+
+  ship_destruction_data <- data.frame(ship_length = integer(), turn = integer())
+
+  while (sum(game_board == 1) > 0) {
+    result <- shoot_at_ship(game_board, coordinates, last_hit)
+    game_board <- result$board
+    coordinates <- result$coordinates
+    last_hit <- result$last_hit
+    destroyed_ship_length <- result$destroyed_ship_length
+    total_shots <- total_shots + 1
+
+
+    if (!is.null(result$destroyed_ship_length) && result$destroyed_ship_length 
+        > 0) {
+      ship_destruction_data <- rbind(ship_destruction_data, 
+                                     data.frame(ship_length 
+                                                = result$destroyed_ship_length, 
+                                                turn = total_shots))
+    }
+  }
+
+  
+  # cat("All ships destroyed in", total_shots, "shots.\n")
+  return(list(total_shots = total_shots, ship_destruction_data 
+              = ship_destruction_data))
+}
+```
+
+```{r}
+### SIMULATION FOR RANDOM ###
+set.seed(42)
+n <- 1000
+total_shots_random <- numeric(n)
+ship_destruction_details <- vector("list", n)
+ship_lengths <- c(4, 3, 2, 1)
+
+for (i in 1:n) {
+  game_result <- play_game()
+  total_shots_random[i] <- game_result$total_shots
+  ship_destruction_details[[i]] <- game_result$ship_destruction_data
+}
+total_shots_random_extracted <- NULL
+for (i in 1:length(total_shots_random)){
+  total_shots_random_extracted <- append(total_shots_random_extracted, 
+                                         total_shots_random[i])
+}
+
+
+max_turns_per_ship_type_random <- data.frame(matrix(NA, nrow = n, ncol 
+                                                    = length(ship_lengths)))
+names(max_turns_per_ship_type_random) <- paste0("Ship Length ", 
+                                                ship_lengths)
+
+for (i in 1:n) {
+  for (j in 1:length(ship_lengths)) {
+    ship_length <- ship_lengths[j]
+
+    turns_for_ship <- ship_destruction_details[[i]]$turn[ship_destruction_details[[i]]$ship_length 
+                                                         == ship_length]
+    
+
+    if (length(turns_for_ship) > 0) {
+      max_turns_per_ship_type_random[i, j] <- max(turns_for_ship)
+    }
+  }
+}
+
+
+```
+
+```{r}
+### SIMULATION FOR WOLF ###
+set.seed(42)
+n <- 1000
+total_shots_random_wolf <- numeric(n)
+ship_destruction_details_wolf <- vector("list", n)
+ship_lengths <- c(4, 3, 2, 1)
+
+for (i in 1:n) {
+  game_result <- play_game_wolf()
+  total_shots_random_wolf[i] <- game_result$total_shots 
+  ship_destruction_details_wolf[[i]] <- game_result$ship_destruction_data 
+}
+total_shots_random_extracted <- NULL
+for (i in 1:length(total_shots_random_wolf)){
+  total_shots_random_extracted <- append(total_shots_random_extracted, total_shots_random[i])
+}
+
+
+
+
+max_turns_per_ship_type_wolf <- data.frame(matrix(NA, nrow = n, ncol = length(ship_lengths)))
+names(max_turns_per_ship_type_wolf) <- paste0("Ship Length ", ship_lengths)
+
+for (i in 1:n) {
+  for (j in 1:length(ship_lengths)) {
+    ship_length <- ship_lengths[j]
+
+    turns_for_ship <- ship_destruction_details_wolf[[i]]$turn[ship_destruction_details_wolf[[i]]$ship_length == ship_length]
+    
+
+    if (length(turns_for_ship) > 0) {
+      max_turns_per_ship_type_wolf[i, j] <- max(turns_for_ship)
+    }
+  }
+}
+
+
+```
+
+```{r}
+### SIMULATION FOR EDGE ###
+set.seed(42)
+n <- 1000
+total_shots_random_edge <- numeric(n)
+ship_destruction_details_edge <- vector("list", n)
+ship_lengths <- c(4, 3, 2, 1)
+
+for (i in 1:n) {
+  game_result <- play_game_edge()
+  total_shots_random_edge[i] <- game_result$total_shots
+  ship_destruction_details_edge[[i]] <- game_result$ship_destruction_data
+}
+total_shots_random_extracted <- NULL
+for (i in 1:length(total_shots_random_edge)){
+  total_shots_random_extracted <- append(total_shots_random_extracted, total_shots_random[i])
+}
+
+
+
+max_turns_per_ship_type_edge <- data.frame(matrix(NA, nrow = n, ncol = length(ship_lengths)))
+names(max_turns_per_ship_type_edge) <- paste0("Ship Length ", ship_lengths)
+
+for (i in 1:n) {
+  for (j in 1:length(ship_lengths)) {
+    ship_length <- ship_lengths[j]
+    turns_for_ship <- ship_destruction_details_edge[[i]]$turn[ship_destruction_details_edge[[i]]$ship_length == ship_length]
+    
+    if (length(turns_for_ship) > 0) {
+      max_turns_per_ship_type_edge[i, j] <- max(turns_for_ship)
+    } 
+  }
+}
+
+
+
+```
+
+
+```{r}
+par(mfrow = c(1, 3))
+
+hist(total_shots_random, main = "Total Shots to Destroy (Random)", xlab = "Total Shots", ylab = "Frequency", col = "blue", border = "black")
+hist(total_shots_random_wolf, main = "Total Shots to Destroy (Wolf)", xlab = "Total Shots", ylab = "Frequency", col = "red", border = "black")
+hist(total_shots_random_edge, main = "Total Shots to Destroy (Edge)", xlab = "Total Shots", ylab = "Frequency", col = "green", border = "black")
+
+# Assuming total_shots_random, total_shots_random_wolf, and total_shots_random_edge are numeric vectors
+anova_total <- data.frame(
+  total_shots = c(total_shots_random, total_shots_random_wolf, total_shots_random_edge),
+  strategy = factor(rep(c("random", "wolf", "edge"), each = length(total_shots_random)))
+)
+
+# Perform ANOVA
+anova_result <- aov(total_shots ~ strategy, data = anova_total)
+
+# Get the summary of the ANOVA
+cat("Mean for Random: ", mean(total_shots_random))
+cat('\n')
+cat("Mean for Wolf: ", mean(total_shots_random_wolf))
+cat('\n')
+cat("Mean for Edge: ", mean(total_shots_random_edge))
+cat('\n')
+summary(anova_result)
+confint(anova_result)
+
+```
+
+
+
+```{r}
+max_turns_per_ship_type_random$group <- 'random'
+max_turns_per_ship_type_wolf$group <- 'wolf'
+max_turns_per_ship_type_edge$group <- 'edge'
+
+random_vs_wolf <- rbind(max_turns_per_ship_type_random, max_turns_per_ship_type_wolf)
+random_vs_edge <- rbind(max_turns_per_ship_type_random, max_turns_per_ship_type_edge)
+wolf_vs_edge <- rbind(max_turns_per_ship_type_wolf, max_turns_per_ship_type_edge)
+
+random_vs_wolf_anova <- aov(cbind(random_vs_wolf$`Ship Length 1`, random_vs_wolf$`Ship Length 2`, random_vs_wolf$`Ship Length 3`, random_vs_wolf$`Ship Length 4`) ~ group, data = random_vs_wolf)
+summary(random_vs_wolf_anova)
+
+random_vs_edge_anova <- aov(cbind(random_vs_edge$`Ship Length 1`, random_vs_edge$`Ship Length 2`, random_vs_edge$`Ship Length 3`, random_vs_edge$`Ship Length 4`) ~ group, data = random_vs_edge)
+
+wolf_vs_edge_anova <- aov(cbind(wolf_vs_edge$`Ship Length 1`, wolf_vs_edge$`Ship Length 2`, wolf_vs_edge$`Ship Length 3`, wolf_vs_edge$`Ship Length 4`) ~ group, data = wolf_vs_edge)
+
+extract_p_values <- function(anova_result) {
+  sapply(1:4, function(i) {
+    if (length(summary(anova_result)[[i]]) > 1) { 
+      return(summary(anova_result)[[i]][["Pr(>F)"]][1])  
+    } else {
+      return(NA)  
+    }
+  })
+}
+
+random_vs_wolf_pvalues <- extract_p_values(random_vs_wolf_anova)
+random_vs_edge_pvalues <- extract_p_values(random_vs_edge_anova)
+wolf_vs_edge_pvalues <- extract_p_values(wolf_vs_edge_anova)
+
+
+combined_anova_summary <- data.frame(
+  'Random_vs_Wolf' = random_vs_wolf_pvalues,
+  'Random_vs_Edge' = random_vs_edge_pvalues,
+  'Wolf_vs_Edge' = wolf_vs_edge_pvalues
+)
+rownames(combined_anova_summary) <- paste0("Ship Length ", 1:4)
+rounded_combined_anova_summary <- round(combined_anova_summary, 3)
+
+
+boxplot(max_turns_per_ship_type_random[,1:4], 
+        main = "Turns to Destroy Last Ship of Each Type (Random)", 
+        ylab = "Turn Number", xlab = "Ship Type", 
+        col = "lightblue", border = "black",
+        names = paste0("Ship Length ",c(4,3,2,1)))
+
+means_random <- colMeans(max_turns_per_ship_type_random[,1:4], na.rm = TRUE)
+points(1:4, means_random, col = "red", pch = 18)
+text(1:4, means_random, labels = round(means_random, 2), pos = 3, cex = 0.8, col = "red")
+
+
+boxplot(max_turns_per_ship_type_wolf[,1:4], 
+        main = "Turns to Destroy Last Ship of Each Type (Wolf)", 
+        ylab = "Turn Number", xlab = "Ship Type", 
+        col = "red", border = "black",
+        names = paste0("Ship Length ",c(4,3,2,1)))
+
+means_wolf <- colMeans(max_turns_per_ship_type_wolf[,1:4], na.rm = TRUE)
+points(1:4, means_wolf, col = "blue", pch = 18)
+text(1:4, means_wolf, labels = round(means_wolf, 2), pos = 3, cex = 0.8, col = "blue")
+
+
+boxplot(max_turns_per_ship_type_edge[,1:4], 
+        main = "Turns to Destroy Last Ship of Each Type (Edge)", 
+        ylab = "Turn Number", xlab = "Ship Type", 
+        col = "lightgreen", border = "black",
+        names = paste0("Ship Length ", c(4,3,2,1)))
+means_edge <- colMeans(max_turns_per_ship_type_edge[,1:4], na.rm = TRUE)
+points(1:4, means_edge, col = "red", pch = 18)
+text(1:4, means_edge, labels = round(means_edge, 2), pos = 3, cex = 0.8, col = "red")
+
+rounded_combined_anova_summary
+```
+
